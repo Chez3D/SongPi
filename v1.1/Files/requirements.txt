@@ -1,5 +1,0 @@
-pyaudio
-shazamio>=0.4.0
-requests
-Pillow
-screeninfo
