@@ -50,7 +50,7 @@ SONG_HISTORY_FILE_PATH = APP_ROOT_DIR / SONG_HISTORY_FILENAME
 MIN_WINDOW_WIDTH = 250
 MIN_WINDOW_HEIGHT = 200
 
-MUSIC_SCORE_THRESHOLD = 0.4
+MUSIC_SCORE_THRESHOLD = 0.5
 
 # --- Global State ---
 config: Dict[str, Any] = {}
@@ -1719,7 +1719,7 @@ def sigmoid(x):
     return 1 / (1 + np.exp(-np.clip(x, -20, 20)))
 
 
-def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) -> bool:
+def file_should_send_to_shazam(file_path: str, music_threshold: float = MUSIC_SCORE_THRESHOLD) -> bool:
     """
     Processes an audio file using proper float32 normalization and passes
     the output layer through a sigmoid conversion step for accurate scores.
