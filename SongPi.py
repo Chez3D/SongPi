@@ -1749,7 +1749,7 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) ->
     audio_file_amplitude_max = np.max(np.abs(audio_data))
     logger.info(f"Audio file peak amplitude: {audio_file_amplitude_max}")
 
-    if audio_file_amplitude_max < 20.0:
+    if audio_file_amplitude_max < 0.02:
         logger.warning(f"Dropped {file_path}: Audio signal is too faint.")
         return False
 
