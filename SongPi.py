@@ -81,8 +81,8 @@ logger = logging.getLogger("SongRecognizer")
 interpreter = litert.Interpreter(model_path="yamnet.tflite")
 interpreter.allocate_tensors()
 
-input_details = interpreter.get_input_details()[0]
-output_details = interpreter.get_output_details()[0]
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
 
 # In the standard YAMNet mapping, class index 0 is "Speech" and 132 is "Music"
 MUSIC_CLASS_INDEX = 132
