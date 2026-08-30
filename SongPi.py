@@ -1714,9 +1714,10 @@ def write_history_separator():
           logger.debug("History log file doesn't exist or is empty. Skipping separator.")
 
 
-def sigmoid(x):
-    """Converts the raw model logits into real 0.0 - 1.0 probability percentages."""
-    return 1 / (1 + np.exp(-np.clip(x, -20, 20)))
+def softmax(x):
+    """Computes softmax probabilities across the model's multi-class output array."""
+    e_x = np.exp(x - np.max(x))
+    return e_x / e_x.sum(axis=-1, keepdims=True)
 
 
 def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) -> bool:
@@ -1772,7 +1773,7 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) ->
         raw_logits = interpreter.get_tensor(output_details[0]['index']).flatten()
 
         # CRITICAL FIX: Convert logits to real probability scores
-        probabilities = sigmoid(raw_logits)
+        probabilities = softmax(raw_logits)
 
         # Index 132 maps to the core "Music" class
         music_scores.append(probabilities[MUSIC_CLASS_INDEX])
