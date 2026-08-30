@@ -81,8 +81,8 @@ logger = logging.getLogger("SongRecognizer")
 interpreter = litert.Interpreter(model_path="yamnet.tflite")
 interpreter.allocate_tensors()
 
-input_details = interpreter.get_input_details()
-output_details = interpreter.get_output_details()
+input_details = interpreter.get_input_details()[0]
+output_details = interpreter.get_output_details()[0]
 
 # In the standard YAMNet mapping, class index 0 is "Speech" and 132 is "Music"
 MUSIC_CLASS_INDEX = 132
@@ -1757,13 +1757,6 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = MUSIC_SC
 
     return music_confidence >= music_threshold
 
-
-# --- Example Usage ---
-# file_path = "incoming_track.wav"
-# if file_should_send_to_shazam(file_path):
-#     print("Proceeding to upload to Shazam API.")
-# else:
-#     print("Aborted: File does not sound like music.")
 
 def main():
     global root, canvas, config, title_label_id, artist_label_id, status_label_id, coverart_item_id
