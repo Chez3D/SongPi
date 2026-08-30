@@ -1714,7 +1714,7 @@ def write_history_separator():
           logger.debug("History log file doesn't exist or is empty. Skipping separator.")
 
 
-def file_should_send_to_shazam(file_path: str, music_threshold: float = MUSIC_SCORE_THRESHOLD) -> bool:
+def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.25) -> bool:
     """
     Evaluates whether the audio file contains sufficient music content before
     spending network and API resources on Shazam recognition.
@@ -1733,35 +1733,42 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = MUSIC_SC
 
     audio_data = raw_samples.astype(np.float32) / max_val
 
-    audio_file_amplitude_max = np.max(np.abs(audio_data))
-    logger.info(f"Audio file peak amplitude: {audio_file_amplitude_max}")
+    audio_file_amplitude_max = float(np.max(np.abs(audio_data)))
+    logger.info(f"Audio file peak amplitude: {audio_file_amplitude_max:.4f}")
 
     if audio_file_amplitude_max < 0.02:
         logger.warning(f"Dropped {file_path}: Audio signal is too faint.")
         return False
 
-    CHUNK_SIZE = 15600  # Exactly 0.975 seconds at 16kHz
+    # 1. Peak Normalization: scale active signal to utilize standard dynamic range (~0.90)
+    audio_data = audio_data * (0.90 / audio_file_amplitude_max)
+
+    CHUNK_SIZE = 15600   # 0.975 seconds at 16kHz
+    HOP_SIZE = 7800      # 50% overlap for better boundary coverage
     music_scores = []
 
-    for i in range(0, len(audio_data), CHUNK_SIZE):
+    for i in range(0, len(audio_data) - CHUNK_SIZE + 1, HOP_SIZE):
         chunk = audio_data[i:i + CHUNK_SIZE]
-
-        if len(chunk) < CHUNK_SIZE:
-            chunk = np.pad(chunk, (0, CHUNK_SIZE - len(chunk)), 'constant')
 
         interpreter.set_tensor(input_details[0]['index'], chunk)
         interpreter.invoke()
 
         scores = interpreter.get_tensor(output_details[0]['index']).flatten()
+        music_scores.append(float(scores[MUSIC_CLASS_INDEX]))
 
-        # Index 132 corresponds to the 'Music' class in YAMNet
-        music_scores.append(scores[MUSIC_CLASS_INDEX])
+    if not music_scores:
+        return False
 
-    avg_music_confidence = float(np.mean(music_scores)) if music_scores else 0.0
+    max_music_confidence = max(music_scores)
+    avg_music_confidence = float(np.mean(music_scores))
 
-    logger.info(f"File: {file_path} | Evaluated {len(music_scores)} frames | True Music Score: {avg_music_confidence:.2f}")
+    logger.info(
+        f"File: {file_path} | Evaluated {len(music_scores)} frames | "
+        f"Max Score: {max_music_confidence:.2f} | Avg Score: {avg_music_confidence:.2f}"
+    )
 
-    return avg_music_confidence >= music_threshold
+    # 2. Gate Decision: Check if peak confidence or top frames indicate music
+    return max_music_confidence >= music_threshold
 
 
 def main():
