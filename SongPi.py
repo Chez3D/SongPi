@@ -1714,32 +1714,42 @@ def write_history_separator():
           logger.debug("History log file doesn't exist or is empty. Skipping separator.")
 
 
+def sigmoid(x):
+    """Converts the raw model logits into real 0.0 - 1.0 probability percentages."""
+    return 1 / (1 + np.exp(-np.clip(x, -20, 20)))
+
+
 def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) -> bool:
     """
-    Processes an audio file using raw integer amplitudes to comply with
-    the MediaPipe YAMNet TFLite architecture requirements.
+    Processes an audio file using proper float32 normalization and passes
+    the output layer through a sigmoid conversion step for accurate scores.
     """
-    # 1. Load file using pydub
+    # Load file using pydub
     audio = AudioSegment.from_file(file_path)
 
-    # 2. Re-sample to match YAMNet requirements: 16000Hz, Mono
+    # Re-sample to match YAMNet requirements: 16000Hz, Mono
     audio = audio.set_frame_rate(16000).set_channels(1)
 
-    # 3. Convert raw samples directly to a numpy array
+    # Convert raw samples directly to a numpy array
     raw_samples = np.array(audio.get_array_of_samples())
 
-    # 4. CRITICAL FIX: Cast directly to float32 WITHOUT dividing by max_val.
-    # The MediaPipe build of YAMNet expects unnormalized waveform magnitudes.
-    audio_data = raw_samples.astype(np.float32)
+    # Normalize the data back to float32 between [-1.0, 1.0]
+    if audio.sample_width == 2:
+        max_val = 32768.0
+    elif audio.sample_width == 4:
+        max_val = 2147483648.0
+    else:
+        max_val = 128.0
 
-    # 5. Baseline volume check to filter out silence
-    # (Since we are using unnormalized int values, silence threshold shifts)
+    audio_data = raw_samples.astype(np.float32) / max_val
+
+    # Baseline volume check to filter out complete silence
     rms = np.sqrt(np.mean(audio_data ** 2))
-    if rms < 100.0:  # Scaled up for raw int magnitudes
-        logger.warning(f"Dropped {file_path}: File is silent.")
+    if rms < 0.01:
+        print(f"Dropped {file_path}: File is silent.")
         return False
 
-    # --- CHUNK PROCESSING LOGIC ---
+    # CHUNK PROCESSING LOGIC
     CHUNK_SIZE = 15600  # Exactly 0.975 seconds at 16kHz
     music_scores = []
 
@@ -1750,21 +1760,23 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) ->
         if len(chunk) < CHUNK_SIZE:
             chunk = np.pad(chunk, (0, CHUNK_SIZE - len(chunk)), 'constant')
 
-        # 6. Run Audio Event Detection on this chunk
+        # Run Audio Event Detection on this chunk
         interpreter.set_tensor(input_details[0]['index'], chunk)
         interpreter.invoke()
 
-        # Extract structural scores
-        scores = interpreter.get_tensor(output_details[0]['index'])
-        flat_scores = scores.flatten()
+        # Extract the raw logits layer
+        raw_logits = interpreter.get_tensor(output_details[0]['index']).flatten()
+
+        # CRITICAL FIX: Convert logits to real probability scores
+        probabilities = sigmoid(raw_logits)
 
         # Index 132 maps to the core "Music" class
-        music_scores.append(flat_scores[MUSIC_CLASS_INDEX])
+        music_scores.append(probabilities[MUSIC_CLASS_INDEX])
 
     # Average the music confidence across every processed window of the song
     avg_music_confidence = np.mean(music_scores)
 
-    logger.warning(f"File: {file_path} | Evaluated {len(music_scores)} frames | Avg Music Score: {avg_music_confidence:.2f}")
+    print(f"File: {file_path} | Evaluated {len(music_scores)} frames | True Music Score: {avg_music_confidence:.2f}")
 
     return avg_music_confidence >= music_threshold
 
