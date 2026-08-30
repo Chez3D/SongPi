@@ -1711,10 +1711,10 @@ def write_history_separator():
           logger.debug("History log file doesn't exist or is empty. Skipping separator.")
 
 
-def file_should_send_to_shazam(file_path: str, music_threshold: float = MUSIC_SCORE_THRESHOLD) -> bool:
+def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) -> bool:
     """
-    Accepts an audio file path, prepares it for YAMNet, and evaluates if it contains music.
-    Supports WAV naturally. (Supports MP3/M4A if ffmpeg is installed on the Pi).
+    Processes an audio file by breaking it down into standard 15600-sample (0.975s) chunks
+    to match the fixed structural requirements of the MediaPipe YAMNet TFLite model.
     """
     # 1. Load file using pydub
     audio = AudioSegment.from_file(file_path)
@@ -1726,13 +1726,12 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = MUSIC_SC
     raw_samples = np.array(audio.get_array_of_samples())
 
     # 4. Normalize the data to float32 between [-1.0, 1.0]
-    # Check bit depth to normalize properly (most common is 16-bit)
     if audio.sample_width == 2:
         max_val = 32768.0
     elif audio.sample_width == 4:
         max_val = 2147483648.0
     else:
-        max_val = 128.0  # 8-bit audio
+        max_val = 128.0
 
     audio_data = raw_samples.astype(np.float32) / max_val
 
@@ -1742,20 +1741,37 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = MUSIC_SC
         print(f"Dropped {file_path}: File is silent.")
         return False
 
-    # 6. Run TFLite Audio Event Detection
-    interpreter.set_tensor(input_details['index'], audio_data)
-    interpreter.invoke()
+    # --- CHUNK PROCESSING LOGIC ---
+    CHUNK_SIZE = 15600  # Exactly 0.975 seconds at 16kHz
+    music_scores = []
 
-    # Extract structural scores [num_frames, 521 classes]
-    scores = interpreter.get_tensor(output_details['index'])
+    # Step through the audio array in increments of 15,600 samples
+    for i in range(0, len(audio_data), CHUNK_SIZE):
+        chunk = audio_data[i:i + CHUNK_SIZE]
 
-    # Average the timeline scores across the entire audio clip
-    mean_scores = np.mean(scores, axis=0)
-    music_confidence = mean_scores[MUSIC_CLASS_INDEX]
+        # If the remaining audio clip is shorter than 15600, pad it with zeros
+        if len(chunk) < CHUNK_SIZE:
+            chunk = np.pad(chunk, (0, CHUNK_SIZE - len(chunk)), 'constant')
 
-    print(f"File: {file_path} | Music Confidence Score: {music_confidence:.2f}")
+        # 6. Run LiteRT Audio Event Detection on this chunk
+        interpreter.set_tensor(input_details[0]['index'], chunk)
+        interpreter.invoke()
 
-    return music_confidence >= music_threshold
+        # Extract structural scores for this specific window
+        scores = interpreter.get_tensor(output_details[0]['index'])
+
+        # YAMNet can return output shaped as [1, 521] or flat [521]
+        # We flatten it to guarantee safe indexing
+        flat_scores = scores.flatten()
+
+        music_scores.append(flat_scores[MUSIC_CLASS_INDEX])
+
+    # Average the music confidence across every processed window of the song
+    avg_music_confidence = np.mean(music_scores)
+
+    print(f"File: {file_path} | Evaluated {len(music_scores)} frames | Avg Music Score: {avg_music_confidence:.2f}")
+
+    return avg_music_confidence >= music_threshold
 
 
 def main():
