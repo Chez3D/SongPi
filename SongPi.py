@@ -78,6 +78,9 @@ recognition_thread_stop_event = threading.Event()
 
 logger = logging.getLogger("SongRecognizer")
 
+log_level = os.environ.get("LOG_LEVEL", "INFO").upper()
+logger.setLevel(log_level)
+
 interpreter = litert.Interpreter(model_path="yamnet.tflite")
 interpreter.allocate_tensors()
 
@@ -1591,7 +1594,7 @@ async def periodic_recognition_task(stop_event: threading.Event):
                 if file_should_send_to_shazam(wav_file_path):
                     shazam_result = await recognize_song(wav_file_path)
                 else:
-                    print(f"File did not meet music score threshold - skipping")
+                    logger.warning(f"File did not meet music score threshold - skipping")
                     continue
 
                 if shazam_result and not stop_event.is_set():
@@ -1733,7 +1736,7 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) ->
     # (Since we are using unnormalized int values, silence threshold shifts)
     rms = np.sqrt(np.mean(audio_data ** 2))
     if rms < 100.0:  # Scaled up for raw int magnitudes
-        print(f"Dropped {file_path}: File is silent.")
+        logger.warning(f"Dropped {file_path}: File is silent.")
         return False
 
     # --- CHUNK PROCESSING LOGIC ---
@@ -1761,7 +1764,7 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) ->
     # Average the music confidence across every processed window of the song
     avg_music_confidence = np.mean(music_scores)
 
-    print(f"File: {file_path} | Evaluated {len(music_scores)} frames | Avg Music Score: {avg_music_confidence:.2f}")
+    logger.warning(f"File: {file_path} | Evaluated {len(music_scores)} frames | Avg Music Score: {avg_music_confidence:.2f}")
 
     return avg_music_confidence >= music_threshold
 
