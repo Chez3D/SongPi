@@ -50,7 +50,7 @@ SONG_HISTORY_FILE_PATH = APP_ROOT_DIR / SONG_HISTORY_FILENAME
 MIN_WINDOW_WIDTH = 250
 MIN_WINDOW_HEIGHT = 200
 
-MUSIC_SCORE_THRESHOLD = 0.5
+MUSIC_SCORE_THRESHOLD = 0.25
 
 # --- Global State ---
 config: Dict[str, Any] = {}
@@ -1714,26 +1714,16 @@ def write_history_separator():
           logger.debug("History log file doesn't exist or is empty. Skipping separator.")
 
 
-def sigmoid(x):
-    """Converts the raw model logits into real 0.0 - 1.0 probability percentages."""
-    return 1 / (1 + np.exp(-np.clip(x, -20, 20)))
-
-
 def file_should_send_to_shazam(file_path: str, music_threshold: float = MUSIC_SCORE_THRESHOLD) -> bool:
     """
-    Processes an audio file using proper float32 normalization and passes
-    the output layer through a sigmoid conversion step for accurate scores.
+    Evaluates whether the audio file contains sufficient music content before
+    spending network and API resources on Shazam recognition.
     """
-    # Load file using pydub
     audio = AudioSegment.from_file(file_path)
-
-    # Re-sample to match YAMNet requirements: 16000Hz, Mono
     audio = audio.set_frame_rate(16000).set_channels(1)
 
-    # Convert raw samples directly to a numpy array
     raw_samples = np.array(audio.get_array_of_samples())
 
-    # Normalize the data back to float32 between [-1.0, 1.0]
     if audio.sample_width == 2:
         max_val = 32768.0
     elif audio.sample_width == 4:
@@ -1743,9 +1733,6 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = MUSIC_SC
 
     audio_data = raw_samples.astype(np.float32) / max_val
 
-    # Baseline volume check to filter out complete silence
-    rms = np.sqrt(np.mean(audio_data ** 2))
-
     audio_file_amplitude_max = np.max(np.abs(audio_data))
     logger.info(f"Audio file peak amplitude: {audio_file_amplitude_max}")
 
@@ -1753,32 +1740,24 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = MUSIC_SC
         logger.warning(f"Dropped {file_path}: Audio signal is too faint.")
         return False
 
-    # CHUNK PROCESSING LOGIC
     CHUNK_SIZE = 15600  # Exactly 0.975 seconds at 16kHz
     music_scores = []
 
     for i in range(0, len(audio_data), CHUNK_SIZE):
         chunk = audio_data[i:i + CHUNK_SIZE]
 
-        # Pad short tail clips with zeroed audio structures
         if len(chunk) < CHUNK_SIZE:
             chunk = np.pad(chunk, (0, CHUNK_SIZE - len(chunk)), 'constant')
 
-        # Run Audio Event Detection on this chunk
         interpreter.set_tensor(input_details[0]['index'], chunk)
         interpreter.invoke()
 
-        # Extract the raw logits layer
-        raw_logits = interpreter.get_tensor(output_details[0]['index']).flatten()
+        scores = interpreter.get_tensor(output_details[0]['index']).flatten()
 
-        # CRITICAL FIX: Convert logits to real probability scores
-        probabilities = sigmoid(raw_logits)
+        # Index 132 corresponds to the 'Music' class in YAMNet
+        music_scores.append(scores[MUSIC_CLASS_INDEX])
 
-        # Index 132 maps to the core "Music" class
-        music_scores.append(probabilities[MUSIC_CLASS_INDEX])
-
-    # Average the music confidence across every processed window of the song
-    avg_music_confidence = np.mean(music_scores)
+    avg_music_confidence = float(np.mean(music_scores)) if music_scores else 0.0
 
     logger.info(f"File: {file_path} | Evaluated {len(music_scores)} frames | True Music Score: {avg_music_confidence:.2f}")
 
