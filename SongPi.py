@@ -1,4 +1,4 @@
-# --- START OF FILE shazam.py ---
+# --- START OF FILE SongPi.py ---
 
 import pyaudio
 import wave
@@ -20,8 +20,12 @@ import sys
 from typing import Optional, Dict, Any, Tuple, List, Literal, Union
 from pathlib import Path
 
+import numpy as np
+from pydub import AudioSegment
+import ai_edge_litert.interpreter as litert
+
 # --- Constants ---
-# Get the directory containing this script (shazam.py) -> Files/
+# Get the directory containing this script (SongPi.py) -> Files/
 SCRIPT_DIR = Path(__file__).parent.resolve()
 # Get the parent directory of the script's directory -> SongPi_Root_Folder/
 APP_ROOT_DIR = SCRIPT_DIR.parent
@@ -45,6 +49,8 @@ SONG_HISTORY_FILE_PATH = APP_ROOT_DIR / SONG_HISTORY_FILENAME
 
 MIN_WINDOW_WIDTH = 250
 MIN_WINDOW_HEIGHT = 200
+
+MUSIC_SCORE_THRESHOLD = 0.4
 
 # --- Global State ---
 config: Dict[str, Any] = {}
@@ -71,6 +77,15 @@ recognition_thread: Optional[threading.Thread] = None
 recognition_thread_stop_event = threading.Event()
 
 logger = logging.getLogger("SongRecognizer")
+
+interpreter = litert.Interpreter(model_path="yamnet.tflite")
+interpreter.allocate_tensors()
+
+input_details = interpreter.get_input_details()
+output_details = interpreter.get_output_details()
+
+# In the standard YAMNet mapping, class index 0 is "Speech" and 132 is "Music"
+MUSIC_CLASS_INDEX = 132
 
 
 # --- Configuration Loading ---
@@ -1573,22 +1588,25 @@ async def periodic_recognition_task(stop_event: threading.Event):
             wav_file_path = record_audio()
 
             if wav_file_path and not stop_event.is_set():
-                 shazam_result = await recognize_song(wav_file_path)
+                if file_should_send_to_shazam(wav_file_path):
+                    shazam_result = await recognize_song(wav_file_path)
+                else:
+                    print(f"File did not meet music score threshold - skipping")
+                    continue
 
-                 if shazam_result and not stop_event.is_set():
-                      if 'track' in shazam_result and shazam_result.get('track'):
-                           update_data = await process_recognition_result(shazam_result)
-                      elif 'matches' in shazam_result and not shazam_result.get('matches'):
-                           update_data = {'status': 'no_match', 'message': 'No Match Found'}
-                      else:
-                           logger.error(f"Unexpected Shazam result format or empty track: {shazam_result}")
-                           update_data = {'status': 'error', 'message': 'Bad Shazam Result'}
-                 elif not shazam_result and not stop_event.is_set():
-                      update_data = {'status': 'error', 'message': current_status_message}
-                 elif stop_event.is_set():
-                      logger.info("Stop event detected after recognize_song.")
-                      update_data = {'status': 'error', 'message': 'Shutdown'}
-
+                if shazam_result and not stop_event.is_set():
+                  if 'track' in shazam_result and shazam_result.get('track'):
+                       update_data = await process_recognition_result(shazam_result)
+                  elif 'matches' in shazam_result and not shazam_result.get('matches'):
+                       update_data = {'status': 'no_match', 'message': 'No Match Found'}
+                  else:
+                       logger.error(f"Unexpected Shazam result format or empty track: {shazam_result}")
+                       update_data = {'status': 'error', 'message': 'Bad Shazam Result'}
+                elif not shazam_result and not stop_event.is_set():
+                  update_data = {'status': 'error', 'message': current_status_message}
+                elif stop_event.is_set():
+                  logger.info("Stop event detected after recognize_song.")
+                  update_data = {'status': 'error', 'message': 'Shutdown'}
 
             elif not wav_file_path and not stop_event.is_set():
                  logger.warning("Recording failed or produced no file.")
@@ -1693,6 +1711,60 @@ def write_history_separator():
           logger.debug("History log file doesn't exist or is empty. Skipping separator.")
 
 
+def file_should_send_to_shazam(file_path: str, music_threshold: float = MUSIC_SCORE_THRESHOLD) -> bool:
+    """
+    Accepts an audio file path, prepares it for YAMNet, and evaluates if it contains music.
+    Supports WAV naturally. (Supports MP3/M4A if ffmpeg is installed on the Pi).
+    """
+    # 1. Load file using pydub
+    audio = AudioSegment.from_file(file_path)
+
+    # 2. Re-sample to match YAMNet requirements: 16000Hz, Mono
+    audio = audio.set_frame_rate(16000).set_channels(1)
+
+    # 3. Convert raw samples to an integer numpy array
+    raw_samples = np.array(audio.get_array_of_samples())
+
+    # 4. Normalize the data to float32 between [-1.0, 1.0]
+    # Check bit depth to normalize properly (most common is 16-bit)
+    if audio.sample_width == 2:
+        max_val = 32768.0
+    elif audio.sample_width == 4:
+        max_val = 2147483648.0
+    else:
+        max_val = 128.0  # 8-bit audio
+
+    audio_data = raw_samples.astype(np.float32) / max_val
+
+    # 5. Baseline volume check to filter out silence
+    rms = np.sqrt(np.mean(audio_data ** 2))
+    if rms < 0.01:
+        print(f"Dropped {file_path}: File is silent.")
+        return False
+
+    # 6. Run TFLite Audio Event Detection
+    interpreter.set_tensor(input_details['index'], audio_data)
+    interpreter.invoke()
+
+    # Extract structural scores [num_frames, 521 classes]
+    scores = interpreter.get_tensor(output_details['index'])
+
+    # Average the timeline scores across the entire audio clip
+    mean_scores = np.mean(scores, axis=0)
+    music_confidence = mean_scores[MUSIC_CLASS_INDEX]
+
+    print(f"File: {file_path} | Music Confidence Score: {music_confidence:.2f}")
+
+    return music_confidence >= music_threshold
+
+
+# --- Example Usage ---
+# file_path = "incoming_track.wav"
+# if file_should_send_to_shazam(file_path):
+#     print("Proceeding to upload to Shazam API.")
+# else:
+#     print("Aborted: File does not sound like music.")
+
 def main():
     global root, canvas, config, title_label_id, artist_label_id, status_label_id, coverart_item_id
 
@@ -1758,4 +1830,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-# --- END OF FILE shazam.py ---
+# --- END OF FILE SongPi.py ---
