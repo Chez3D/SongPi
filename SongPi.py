@@ -1745,8 +1745,12 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) ->
 
     # Baseline volume check to filter out complete silence
     rms = np.sqrt(np.mean(audio_data ** 2))
-    if rms < 0.01:
-        print(f"Dropped {file_path}: File is silent.")
+
+    audio_file_amplitude_max = np.max(np.abs(audio_data))
+    logger.info(f"Audio file peak amplitude: {audio_file_amplitude_max}")
+
+    if audio_file_amplitude_max < 20.0:
+        logger.warning(f"Dropped {file_path}: Audio signal is too faint.")
         return False
 
     # CHUNK PROCESSING LOGIC
@@ -1776,7 +1780,7 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) ->
     # Average the music confidence across every processed window of the song
     avg_music_confidence = np.mean(music_scores)
 
-    print(f"File: {file_path} | Evaluated {len(music_scores)} frames | True Music Score: {avg_music_confidence:.2f}")
+    logger.info(f"File: {file_path} | Evaluated {len(music_scores)} frames | True Music Score: {avg_music_confidence:.2f}")
 
     return avg_music_confidence >= music_threshold
 
