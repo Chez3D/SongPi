@@ -1713,8 +1713,8 @@ def write_history_separator():
 
 def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) -> bool:
     """
-    Processes an audio file by breaking it down into standard 15600-sample (0.975s) chunks
-    to match the fixed structural requirements of the MediaPipe YAMNet TFLite model.
+    Processes an audio file using raw integer amplitudes to comply with
+    the MediaPipe YAMNet TFLite architecture requirements.
     """
     # 1. Load file using pydub
     audio = AudioSegment.from_file(file_path)
@@ -1722,22 +1722,17 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) ->
     # 2. Re-sample to match YAMNet requirements: 16000Hz, Mono
     audio = audio.set_frame_rate(16000).set_channels(1)
 
-    # 3. Convert raw samples to an integer numpy array
+    # 3. Convert raw samples directly to a numpy array
     raw_samples = np.array(audio.get_array_of_samples())
 
-    # 4. Normalize the data to float32 between [-1.0, 1.0]
-    if audio.sample_width == 2:
-        max_val = 32768.0
-    elif audio.sample_width == 4:
-        max_val = 2147483648.0
-    else:
-        max_val = 128.0
-
-    audio_data = raw_samples.astype(np.float32) / max_val
+    # 4. CRITICAL FIX: Cast directly to float32 WITHOUT dividing by max_val.
+    # The MediaPipe build of YAMNet expects unnormalized waveform magnitudes.
+    audio_data = raw_samples.astype(np.float32)
 
     # 5. Baseline volume check to filter out silence
+    # (Since we are using unnormalized int values, silence threshold shifts)
     rms = np.sqrt(np.mean(audio_data ** 2))
-    if rms < 0.01:
+    if rms < 100.0:  # Scaled up for raw int magnitudes
         print(f"Dropped {file_path}: File is silent.")
         return False
 
@@ -1745,25 +1740,22 @@ def file_should_send_to_shazam(file_path: str, music_threshold: float = 0.40) ->
     CHUNK_SIZE = 15600  # Exactly 0.975 seconds at 16kHz
     music_scores = []
 
-    # Step through the audio array in increments of 15,600 samples
     for i in range(0, len(audio_data), CHUNK_SIZE):
         chunk = audio_data[i:i + CHUNK_SIZE]
 
-        # If the remaining audio clip is shorter than 15600, pad it with zeros
+        # Pad short tail clips with zeroed audio structures
         if len(chunk) < CHUNK_SIZE:
             chunk = np.pad(chunk, (0, CHUNK_SIZE - len(chunk)), 'constant')
 
-        # 6. Run LiteRT Audio Event Detection on this chunk
+        # 6. Run Audio Event Detection on this chunk
         interpreter.set_tensor(input_details[0]['index'], chunk)
         interpreter.invoke()
 
-        # Extract structural scores for this specific window
+        # Extract structural scores
         scores = interpreter.get_tensor(output_details[0]['index'])
-
-        # YAMNet can return output shaped as [1, 521] or flat [521]
-        # We flatten it to guarantee safe indexing
         flat_scores = scores.flatten()
 
+        # Index 132 maps to the core "Music" class
         music_scores.append(flat_scores[MUSIC_CLASS_INDEX])
 
     # Average the music confidence across every processed window of the song
